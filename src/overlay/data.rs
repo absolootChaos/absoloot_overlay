@@ -13,6 +13,38 @@ pub struct AppState {
     pub initialized: bool,
     pub death_count: u32,
     pub great_runes: i32,
+    pub player_check_count: u32,
+    pub team_unique_check_count: u32,
+    pub player_shard_count: u32,
+    pub team_unique_shard_count: u32,
+    pub required_unique_shards: Option<u32>,
+    pub shard_requirement_met: bool,
+    pub victory_flag_reached: bool,
+    pub finish_requirements_met: bool,
+    pub player_finish_igt_ms: Option<u64>,
+    pub teammate_current_igt_ms: Option<u64>,
+    pub teammate_finish_igt_ms: Option<u64>,
+    pub team_finished: bool,
+    pub combined_finish_igt_ms: Option<u64>,
+    pub combined_current_igt_ms: Option<u64>,
+    pub combined_check_count: Option<u32>,
+    pub combined_death_count: Option<u32>,
+    pub total_check_count: u32,
+    pub pending_event_flags: Vec<PendingEventFlag>,
+    pub applied_event_delivery_ids: Vec<String>,
+    pub pending_death_links: Vec<PendingDeathLink>,
+    pub applied_death_link_delivery_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingEventFlag {
+    pub delivery_id: String,
+    pub event_flag: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingDeathLink {
+    pub delivery_id: String,
 }
 
 pub type SharedState = Arc<RwLock<AppState>>;
@@ -70,7 +102,7 @@ pub fn load_localized_boss_data(
     for path in candidates {
         if !path.exists() {
             debug_log!(
-                "[ignite_overlay] ⚠ Boss data not found at '{}'",
+                "[absoloot_overlay] ⚠ Boss data not found at '{}'",
                 path.display()
             );
             continue;
@@ -80,14 +112,14 @@ pub fn load_localized_boss_data(
             Ok(contents) => match serde_json::from_str::<BossRegions>(&contents) {
                 Ok(data) => {
                     debug_log!(
-                        "[ignite_overlay] ✅ Loaded boss data from '{}'",
+                        "[absoloot_overlay] ✅ Loaded boss data from '{}'",
                         path.display()
                     );
                     return Some(data);
                 }
                 Err(e) => {
                     debug_log!(
-                        "[ignite_overlay] ❌ Failed to parse JSON '{}': {:?}",
+                        "[absoloot_overlay] ❌ Failed to parse JSON '{}': {:?}",
                         path.display(),
                         e
                     );
@@ -95,7 +127,7 @@ pub fn load_localized_boss_data(
             },
             Err(e) => {
                 debug_log!(
-                    "[ignite_overlay] ❌ Could not read '{}': {:?}",
+                    "[absoloot_overlay] ❌ Could not read '{}': {:?}",
                     path.display(),
                     e
                 );
@@ -103,6 +135,6 @@ pub fn load_localized_boss_data(
         }
     }
 
-    debug_log!("[ignite_overlay] ❌ No valid boss data file found");
+    debug_log!("[absoloot_overlay] ❌ No valid boss data file found");
     None
 }

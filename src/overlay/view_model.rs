@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     overlay::{
+        competition::CompetitionSettings,
         config::TimerSettings,
         data::AppState,
         game_monitor::is_great_rune_flag,
@@ -15,6 +16,21 @@ const GOAL_COMPLETE_TITLE: &str = "GOAL COMPLETE";
 pub struct OverlayViewModel {
     pub title: Option<&'static str>,
     pub lines: Vec<String>,
+    pub competition: Option<CompetitionPanel>,
+}
+
+pub struct CompetitionPanel {
+    pub seed_name: String,
+    pub current_igt: String,
+    pub combined_igt: String,
+    pub checks: String,
+    pub combined_checks: String,
+    pub shards: String,
+    pub combined_unique_shards: String,
+    pub deaths: String,
+    pub combined_deaths: String,
+    pub shard_goal_notice: Option<String>,
+    pub victory_flag_reached: bool,
 }
 
 impl OverlayViewModel {
@@ -50,6 +66,32 @@ impl OverlayViewModel {
             ("igt", format_timer(in_game_time_ms, timer)),
             ("shards", shards.to_string()),
             ("runes", runes.to_string()),
+            (
+                "player_shards",
+                state
+                    .map(|state| state.player_shard_count)
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            (
+                "team_shards",
+                state
+                    .map(|state| state.team_unique_shard_count)
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            (
+                "teammate_igt",
+                optional_duration(state.and_then(|state| {
+                    state
+                        .teammate_finish_igt_ms
+                        .or(state.teammate_current_igt_ms)
+                })),
+            ),
+            (
+                "combined_igt",
+                optional_duration(state.and_then(|state| state.combined_finish_igt_ms)),
+            ),
         ]);
         let title = state
             .is_some_and(|state| state.goal_complete)
@@ -57,8 +99,79 @@ impl OverlayViewModel {
         Self {
             title,
             lines: format_display_text(template.unwrap_or(DEFAULT_DISPLAY_TEXT), &variables),
+            competition: None,
         }
     }
+
+    pub fn build_with_competition(
+        state: Option<&AppState>,
+        in_game_time_ms: u32,
+        timer: TimerSettings,
+        template: Option<&str>,
+        settings: &CompetitionSettings,
+    ) -> Self {
+        let mut model = Self::build(state, in_game_time_ms, timer, template);
+        let current_igt = state
+            .and_then(|state| state.player_finish_igt_ms)
+            .and_then(|value| i64::try_from(value).ok())
+            .map(format_duration)
+            .unwrap_or_else(|| format_timer(in_game_time_ms, timer));
+        let shard_goal_notice = state.and_then(|state| {
+            state
+                .required_unique_shards
+                .filter(|_| state.shard_requirement_met)
+                .map(|required| {
+                    format!(
+                        "TEAM SHARD GOAL REACHED  {}/{}",
+                        state.team_unique_shard_count, required
+                    )
+                })
+        });
+        model.competition = Some(CompetitionPanel {
+            seed_name: settings.seed_name.clone(),
+            current_igt,
+            combined_igt: optional_duration(state.and_then(|state| state.combined_current_igt_ms)),
+            checks: state
+                .map(|state| state.player_check_count)
+                .unwrap_or(0)
+                .to_string(),
+            combined_checks: state
+                .map(|state| {
+                    format!(
+                        "{}/{}",
+                        state.team_unique_check_count, state.total_check_count
+                    )
+                })
+                .unwrap_or_else(|| "--".to_string()),
+            shards: state
+                .map(|state| state.key_item_quantity)
+                .unwrap_or(0)
+                .to_string(),
+            combined_unique_shards: state
+                .map(|state| state.team_unique_shard_count)
+                .unwrap_or(0)
+                .to_string(),
+            deaths: state
+                .map(|state| state.death_count)
+                .unwrap_or(0)
+                .to_string(),
+            combined_deaths: optional_count(state.and_then(|state| state.combined_death_count)),
+            shard_goal_notice,
+            victory_flag_reached: state.is_some_and(|state| state.victory_flag_reached),
+        });
+        model
+    }
+}
+
+fn optional_count(value: Option<u32>) -> String {
+    value.map_or_else(|| "--".to_string(), |value| value.to_string())
+}
+
+fn optional_duration(milliseconds: Option<u64>) -> String {
+    milliseconds
+        .and_then(|value| i64::try_from(value).ok())
+        .map(format_duration)
+        .unwrap_or_else(|| "--:--:--".to_string())
 }
 
 fn format_timer(in_game_time_ms: u32, timer: TimerSettings) -> String {
@@ -99,7 +212,9 @@ fn format_duration(milliseconds: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::overlay::{config::TimerSettings, data::AppState, style::TimerMode};
+    use crate::overlay::{
+        competition::CompetitionSettings, config::TimerSettings, data::AppState, style::TimerMode,
+    };
 
     use super::{OverlayViewModel, format_duration, format_timer};
 
@@ -191,5 +306,82 @@ mod tests {
         );
         assert_eq!(complete.title, Some("GOAL COMPLETE"));
         assert_eq!(complete.lines, [" IGT: 00:00:00 "]);
+    }
+
+    #[test]
+    fn exposes_server_confirmed_team_values() {
+        let state = AppState {
+            player_shard_count: 2,
+            team_unique_shard_count: 3,
+            teammate_current_igt_ms: Some(3_661_000),
+            combined_finish_igt_ms: Some(7_322_000),
+            ..Default::default()
+        };
+        let model = OverlayViewModel::build(
+            Some(&state),
+            0,
+            TimerSettings::default(),
+            Some(
+                "Player {player_shards} Team {team_shards}$nMate {teammate_igt} Total {combined_igt}",
+            ),
+        );
+
+        assert_eq!(
+            model.lines,
+            [" Player 2 Team 3 ", " Mate 01:01:01 Total 02:02:02 ",]
+        );
+    }
+
+    #[test]
+    fn builds_competition_scorecard_with_player_and_team_metrics() {
+        let mut state = AppState {
+            key_item_quantity: 2,
+            death_count: 3,
+            player_check_count: 2,
+            team_unique_check_count: 5,
+            total_check_count: 34,
+            team_unique_shard_count: 4,
+            required_unique_shards: Some(4),
+            shard_requirement_met: true,
+            combined_current_igt_ms: Some(7_322_000),
+            combined_check_count: Some(5),
+            combined_death_count: Some(6),
+            ..Default::default()
+        };
+        state.event_flags.extend([(1000, true), (1001, true)]);
+        let settings = CompetitionSettings {
+            seed_name: "Testing Seed".to_string(),
+            api_url: "https://example.supabase.co/functions/v1/telemetry".to_string(),
+            assignment_id: "assignment".to_string(),
+            assignment_token: "a".repeat(64),
+            seed_id: "seed".to_string(),
+            win_condition_flag: 20_010_800,
+            shard_event_flags: vec![2_046_410_800],
+            required_unique_shards: Some(4),
+            death_link_enabled: false,
+            death_link_rebound_seconds: 30,
+        };
+
+        let model = OverlayViewModel::build_with_competition(
+            Some(&state),
+            3_661_000,
+            TimerSettings::default(),
+            None,
+            &settings,
+        );
+        let panel = model.competition.expect("competition scorecard");
+        assert_eq!(panel.seed_name, "Testing Seed");
+        assert_eq!(panel.current_igt, "01:01:01");
+        assert_eq!(panel.combined_igt, "02:02:02");
+        assert_eq!(panel.checks, "2");
+        assert_eq!(panel.combined_checks, "5/34");
+        assert_eq!(panel.shards, "2");
+        assert_eq!(panel.combined_unique_shards, "4");
+        assert_eq!(panel.deaths, "3");
+        assert_eq!(panel.combined_deaths, "6");
+        assert_eq!(
+            panel.shard_goal_notice.as_deref(),
+            Some("TEAM SHARD GOAL REACHED  4/4")
+        );
     }
 }

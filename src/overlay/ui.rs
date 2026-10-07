@@ -10,6 +10,7 @@ use crate::{
     RENDERER_INITIALIZED, debug_log,
     overlay::{
         boss_panel::BossPanel,
+        competition::CompetitionRuntime,
         config::{ConfigManager, RuntimeConfig},
         data::{AppState, create_state},
         input::InputController,
@@ -23,6 +24,29 @@ use crate::{
     },
     util::{debug::attach_console, introspection::get_dll_directory},
 };
+
+fn render_competition_row(
+    ui: &Ui,
+    label: &str,
+    player_value: &str,
+    team_value: &str,
+    value_color: [f32; 4],
+) {
+    render_right_aligned_value(ui, label, value_color);
+    ui.next_column();
+    render_right_aligned_value(ui, player_value, value_color);
+    ui.next_column();
+    render_right_aligned_value(ui, team_value, value_color);
+    ui.next_column();
+}
+
+fn render_right_aligned_value(ui: &Ui, value: &str, color: [f32; 4]) {
+    let width = ui.calc_text_size(value)[0];
+    let available = ui.content_region_avail()[0];
+    let cursor = ui.cursor_pos();
+    ui.set_cursor_pos([cursor[0] + (available - width).max(0.0), cursor[1]]);
+    ui.text_colored(color, value);
+}
 
 pub struct EROverlayUi {
     last_toggle_time: Instant,
@@ -39,6 +63,7 @@ pub struct EROverlayUi {
     igt: Arc<RwLock<u32>>,
     boss_panel: BossPanel,
     runtime: OverlayRuntime,
+    competition: CompetitionRuntime,
     startup_started: Instant,
     first_frame_logged: bool,
     corrected_framebuffer_scale: Option<[f32; 2]>,
@@ -57,14 +82,14 @@ impl EROverlayUi {
         let console_ready = console_requested && attach_console();
 
         match &config_error {
-            Some(error) => debug_log!("[ignite_overlay] ❌ Configuration unavailable: {error}"),
+            Some(error) => debug_log!("[absoloot_overlay] ❌ Configuration unavailable: {error}"),
             None => debug_log!(
-                "[ignite_overlay] ✅ Loaded configuration from '{}'",
+                "[absoloot_overlay] ✅ Loaded configuration from '{}'",
                 config_path.display()
             ),
         }
         debug_log!(
-            "[ignite_overlay] Startup diagnostics: build={}, console_requested={}, console_ready={}, dll_directory='{}'",
+            "[absoloot_overlay] Startup diagnostics: build={}, console_requested={}, console_ready={}, dll_directory='{}'",
             if cfg!(debug_assertions) {
                 "debug"
             } else {
@@ -77,7 +102,13 @@ impl EROverlayUi {
 
         let input = InputController::new(config.as_deref());
         let boss_panel = BossPanel::load(&dll_directory, config.as_deref());
-        debug_log!("[ignite_overlay] UI state constructed successfully");
+        let (competition, competition_error) = CompetitionRuntime::load(&dll_directory);
+        if let Some(error) = &competition_error {
+            debug_log!("[absoloot_telemetry] Competition configuration unavailable: {error}");
+        } else if competition.settings().is_some() {
+            debug_log!("[absoloot_telemetry] Competition configuration loaded");
+        }
+        debug_log!("[absoloot_overlay] UI state constructed successfully");
         Self {
             last_toggle_time: Instant::now(),
             full_mode: false,
@@ -90,6 +121,7 @@ impl EROverlayUi {
             state: create_state(),
             igt: Arc::new(RwLock::new(0)),
             runtime: OverlayRuntime::new(),
+            competition,
             startup_started,
             first_frame_logged: false,
             corrected_framebuffer_scale: None,
@@ -97,8 +129,21 @@ impl EROverlayUi {
     }
 
     fn render_closed(&mut self, ui: &Ui, model: &OverlayViewModel) {
-        render_centered_text(ui, model.title, &model.lines);
-        let line_count = model.lines.len() + usize::from(model.title.is_some());
+        if let Some(competition) = &model.competition {
+            self.render_competition(ui, competition);
+        } else {
+            render_centered_text(ui, model.title, &model.lines);
+        }
+        let line_count = if model.competition.is_some() {
+            7 + usize::from(
+                model
+                    .competition
+                    .as_ref()
+                    .is_some_and(|panel| panel.shard_goal_notice.is_some()),
+            )
+        } else {
+            model.lines.len() + usize::from(model.title.is_some())
+        };
         let total_h = ui.text_line_height_with_spacing() * line_count as f32 + 8.0;
 
         if header_clicked(ui, total_h) {
@@ -106,27 +151,103 @@ impl EROverlayUi {
             if now.duration_since(self.last_toggle_time) > Duration::from_millis(300) {
                 self.full_mode = true;
                 self.last_toggle_time = now;
-                debug_log!("[ignite_overlay] Clicked compact overlay - expanding");
+                debug_log!("[absoloot_overlay] Clicked compact overlay - expanding");
             }
         }
     }
 
-    fn render_open(&mut self, ui: &Ui, model: &OverlayViewModel) {
-        if let Some(title) = model.title {
-            render_centered_line(ui, title);
+    fn render_competition(
+        &mut self,
+        ui: &Ui,
+        panel: &crate::overlay::view_model::CompetitionPanel,
+    ) {
+        const BLUE_COLOR: [f32; 4] = [0.286, 0.749, 0.961, 1.0];
+        const GREEN_COLOR: [f32; 4] = [0.208, 0.839, 0.706, 1.0];
+        const GOLD_COLOR: [f32; 4] = [0.941, 0.741, 0.267, 1.0];
+        const ORANGE_COLOR: [f32; 4] = [1.0, 0.533, 0.188, 1.0];
+        const VALUE_COLOR: [f32; 4] = [0.933, 0.976, 0.992, 1.0];
+        const MUTED_COLOR: [f32; 4] = [0.620, 0.722, 0.769, 1.0];
+
+        render_right_aligned_value(ui, &panel.seed_name, BLUE_COLOR);
+        ui.separator();
+        ui.columns(3, "competition-metrics", false);
+        ui.set_column_width(0, 72.0);
+        ui.set_column_width(1, 96.0);
+        render_right_aligned_value(ui, "Metric", MUTED_COLOR);
+        ui.next_column();
+        render_right_aligned_value(ui, "You", MUTED_COLOR);
+        ui.next_column();
+        render_right_aligned_value(ui, "Team", MUTED_COLOR);
+        ui.next_column();
+        let timer_color = if panel.victory_flag_reached {
+            GOLD_COLOR
+        } else {
+            GREEN_COLOR
+        };
+        render_competition_row(
+            ui,
+            "IGT",
+            &panel.current_igt,
+            &panel.combined_igt,
+            timer_color,
+        );
+        render_competition_row(
+            ui,
+            "Checks",
+            &panel.checks,
+            &panel.combined_checks,
+            VALUE_COLOR,
+        );
+        render_competition_row(
+            ui,
+            "Shards",
+            &panel.shards,
+            &panel.combined_unique_shards,
+            ORANGE_COLOR,
+        );
+        render_competition_row(
+            ui,
+            "Deaths",
+            &panel.deaths,
+            &panel.combined_deaths,
+            VALUE_COLOR,
+        );
+        ui.columns(1, "competition-metrics-end", false);
+        if let Some(notice) = &panel.shard_goal_notice {
+            ui.separator();
+            render_right_aligned_value(ui, notice, GREEN_COLOR);
         }
-        for line in &model.lines {
-            ui.text(line);
+    }
+
+    fn render_open(&mut self, ui: &Ui, model: &OverlayViewModel) {
+        if let Some(competition) = &model.competition {
+            self.render_competition(ui, competition);
+        } else {
+            if let Some(title) = model.title {
+                render_centered_line(ui, title);
+            }
+            for line in &model.lines {
+                ui.text(line);
+            }
         }
 
-        let line_count = model.lines.len() + usize::from(model.title.is_some());
+        let line_count = if model.competition.is_some() {
+            7 + usize::from(
+                model
+                    .competition
+                    .as_ref()
+                    .is_some_and(|panel| panel.shard_goal_notice.is_some()),
+            )
+        } else {
+            model.lines.len() + usize::from(model.title.is_some())
+        };
         let header_h = ui.text_line_height_with_spacing() * line_count as f32 + 8.0;
         if header_clicked(ui, header_h) {
             let now = Instant::now();
             if now.duration_since(self.last_toggle_time) > Duration::from_millis(300) {
                 self.full_mode = false;
                 self.last_toggle_time = now;
-                debug_log!("[ignite_overlay] Clicked header - collapsing overlay");
+                debug_log!("[absoloot_overlay] Clicked header - collapsing overlay");
             }
         }
 
@@ -147,6 +268,7 @@ impl EROverlayUi {
         ui: &Ui,
         model: &OverlayViewModel,
         fixed_width: Option<f32>,
+        fixed_height: Option<f32>,
     ) -> (f32, f32) {
         let pad = unsafe { ui.style().window_padding };
         let max_w = model
@@ -156,12 +278,24 @@ impl EROverlayUi {
             .map(|line| ui.calc_text_size(line)[0])
             .fold(0.0, f32::max);
 
-        let line_count = model.lines.len() + usize::from(model.title.is_some());
+        let line_count = if model.competition.is_some() {
+            7 + usize::from(
+                model
+                    .competition
+                    .as_ref()
+                    .is_some_and(|panel| panel.shard_goal_notice.is_some()),
+            )
+        } else {
+            model.lines.len() + usize::from(model.title.is_some())
+        };
         let total_h = pad[1] * 2.0 + ui.text_line_height_with_spacing() * line_count as f32;
         let measured_width = (pad[0] * 2.0 + max_w).ceil() + 4.0;
         let total_w = fixed_width.map(f32::ceil).unwrap_or(measured_width);
+        let total_h = fixed_height
+            .map(f32::ceil)
+            .unwrap_or_else(|| total_h.ceil());
 
-        (total_w, total_h.ceil())
+        (total_w, total_h)
     }
 
     fn hot_reload_ui_config(&mut self, imgui: &mut imgui::Context, now: Instant) {
@@ -183,14 +317,14 @@ impl EROverlayUi {
                 self.config = Some(config);
                 self.config_error = None;
                 debug_log!(
-                    "[ignite_overlay] Hot-reloaded overlay style, layout, text, timer, and input bindings"
+                    "[absoloot_overlay] Hot-reloaded overlay style, layout, text, timer, and input bindings"
                 );
             }
             Ok(false) => {}
             Err(error) => {
                 self.config_error = Some(error.clone());
                 debug_log!(
-                    "[ignite_overlay] UI config reload failed; keeping previous settings: {error}"
+                    "[absoloot_overlay] UI config reload failed; keeping previous settings: {error}"
                 );
             }
         }
@@ -207,7 +341,7 @@ impl ImguiRenderLoop for EROverlayUi {
     fn initialize(&mut self, imgui: &mut imgui::Context, _ctx: &mut dyn hudhook::RenderContext) {
         RENDERER_INITIALIZED.store(true, std::sync::atomic::Ordering::Release);
         debug_log!(
-            "[ignite_overlay] ✅ DX12 renderer initialized after {:.2?}; initializing overlay resources...",
+            "[absoloot_overlay] ✅ DX12 renderer initialized after {:.2?}; initializing overlay resources...",
             self.startup_started.elapsed()
         );
         self.base_imgui_style = Some(*imgui.style());
@@ -219,7 +353,8 @@ impl ImguiRenderLoop for EROverlayUi {
         }
 
         let flag_ids = self.boss_panel.flag_ids();
-        debug_log!("[ignite_overlay] Loaded {} boss flags", flag_ids.len());
+        debug_log!("[absoloot_overlay] Loaded {} boss flags", flag_ids.len());
+        self.competition.start(self.state.clone());
         self.runtime.start(
             self.state.clone(),
             self.igt.clone(),
@@ -227,16 +362,17 @@ impl ImguiRenderLoop for EROverlayUi {
             self.config_manager.shared(),
             2_008_021,
             100,
-            None,
+            self.competition.sender(),
+            self.competition.settings().cloned(),
         );
-        debug_log!("[ignite_overlay] Game monitor started successfully.");
+        debug_log!("[absoloot_overlay] Game monitor started successfully.");
     }
 
     fn before_render(&mut self, imgui: &mut imgui::Context, _ctx: &mut dyn hudhook::RenderContext) {
         let now = Instant::now();
         self.hot_reload_ui_config(imgui, now);
         if self.input.before_render(imgui, now) {
-            debug_log!("[ignite_overlay] Simulated mouse click");
+            debug_log!("[absoloot_overlay] Simulated mouse click");
         }
     }
 
@@ -245,7 +381,7 @@ impl ImguiRenderLoop for EROverlayUi {
         if corrected_scale != self.corrected_framebuffer_scale {
             if let Some(reported) = corrected_scale {
                 debug_log!(
-                    "[ignite_overlay] Corrected framebuffer scale from {:.2}x{:.2} to 1x1; display size already uses DXGI swap-chain pixels",
+                    "[absoloot_overlay] Corrected framebuffer scale from {:.2}x{:.2} to 1x1; display size already uses DXGI swap-chain pixels",
                     reported[0],
                     reported[1]
                 );
@@ -255,7 +391,7 @@ impl ImguiRenderLoop for EROverlayUi {
 
         if self.input.toggle_requested(ui) {
             self.full_mode = !self.full_mode;
-            debug_log!("[ignite_overlay] full_mode toggled -> {}", self.full_mode);
+            debug_log!("[absoloot_overlay] full_mode toggled -> {}", self.full_mode);
         }
 
         let io = ui.io();
@@ -272,14 +408,24 @@ impl ImguiRenderLoop for EROverlayUi {
                 .config
                 .as_ref()
                 .map(|config| config.overlay.display_text.as_str());
-            OverlayViewModel::build(state.as_deref(), in_game_time, timer, template)
+            if let Some(settings) = self.competition.settings() {
+                OverlayViewModel::build_with_competition(
+                    state.as_deref(),
+                    in_game_time,
+                    timer,
+                    template,
+                    settings,
+                )
+            } else {
+                OverlayViewModel::build(state.as_deref(), in_game_time, timer, template)
+            }
         };
 
         let layout = OverlayLayout::from_config(self.config.as_deref());
         let ([x, y], [width, height]) = layout.expanded_rect(display);
 
         if self.full_mode {
-            ui.window("Ignite HUD")
+            ui.window("absoloot_overlay")
                 .position([x, y], imgui::Condition::Always)
                 .size([width, height], imgui::Condition::Always)
                 .flags(
@@ -300,7 +446,7 @@ impl ImguiRenderLoop for EROverlayUi {
 
             if !self.first_frame_logged {
                 debug_log!(
-                    "[ignite_overlay] ✅ First overlay frame built: mode=expanded, display={:.0}x{:.0}, window_pos=({:.0}, {:.0}), window_size={:.0}x{:.0}",
+                    "[absoloot_overlay] ✅ First overlay frame built: mode=expanded, display={:.0}x{:.0}, window_pos=({:.0}, {:.0}), window_size={:.0}x{:.0}",
                     display[0],
                     display[1],
                     x,
@@ -315,12 +461,18 @@ impl ImguiRenderLoop for EROverlayUi {
                 .config
                 .as_ref()
                 .and_then(|config| config.overlay.closed_width)
+                .or_else(|| model.competition.as_ref().map(|_| 320.0))
                 .map(|width| width.min(display[0].max(1.0)));
-            let requested_size = Self::measure_closed_size(ui, &model, fixed_width);
+            let fixed_height = self
+                .config
+                .as_ref()
+                .and_then(|config| config.overlay.closed_height)
+                .map(|height| height.min(display[1].max(1.0)));
+            let requested_size = Self::measure_closed_size(ui, &model, fixed_width, fixed_height);
             let ([x, y], [width, height]) =
                 layout.compact_rect(display, [requested_size.0, requested_size.1]);
 
-            ui.window("Ignite HUD")
+            ui.window("absoloot_overlay")
                 .position([x, y], imgui::Condition::Always)
                 .size([width, height], imgui::Condition::Always)
                 .flags(
@@ -341,7 +493,7 @@ impl ImguiRenderLoop for EROverlayUi {
 
             if !self.first_frame_logged {
                 debug_log!(
-                    "[ignite_overlay] ✅ First overlay frame built: mode=compact, display={:.0}x{:.0}, window_pos=({:.0}, {:.0}), window_size={:.0}x{:.0}",
+                    "[absoloot_overlay] ✅ First overlay frame built: mode=compact, display={:.0}x{:.0}, window_pos=({:.0}, {:.0}), window_size={:.0}x{:.0}",
                     display[0],
                     display[1],
                     x,

@@ -1,4 +1,4 @@
-# er_overlay
+# Absoloot Overlay
 
 This is an in-game overlay for ELDEN RING with the ability to track the following data:
 
@@ -47,6 +47,42 @@ boss_id = 19000800
 
 The former `[timer].freeze_on_boss_flag` setting has been removed. Configurations that still contain it are rejected; replace it with one of the `[victory]` modes above.
 
+## Absoloot Chaos competition telemetry
+
+Competition telemetry is optional. A player downloads their personal
+`competition_config.toml` from the Season 2 website and places it beside
+`absoloot_overlay.dll`. Do not copy `competition_config.example.toml` over it: the
+downloaded file contains the player's assigned seed, allowed event flags, and a
+secret assignment token.
+
+The local file does not need a teammate ID. Supabase links players through their
+team and selected seed. The overlay reports configured event flags, IGT,
+completed check event flags, shard inventory, and deaths. Supabase deduplicates
+both checks and shard locations across the team. When a seed has an optional
+unique-shard requirement, the configured win flag does not freeze a player's
+IGT until the team has also reached that shard total.
+
+When competition configuration is present, compact mode uses a fixed scorecard
+inspired by the Ignite Nightreign overlay. It shows the seed name followed by
+player and team columns for IGT, checks, shards, and deaths. The team shard value
+is the distinct union of configured shard-location flags, not the sum of both
+players' inventory quantities. The team check value is likewise the distinct
+union of completed check IDs, so the same location completed by both players
+counts once. Reaching an optional shard requirement reveals a green team-goal
+message below the compact scorecard.
+
+The overlay can display the server-confirmed values with these template
+variables in `overlay_config.toml`:
+
+- `{player_shards}`: unique configured shard locations found by this player
+- `{team_shards}`: unique configured shard locations found by either teammate
+- `{teammate_igt}`: the teammate's latest IGT, or their frozen finish IGT
+- `{combined_igt}`: the sum of both frozen finish IGTs
+
+If the competition file is missing, the normal standalone overlay continues to
+work. If Supabase cannot be reached, gameplay and the overlay continue; remote
+values remain at their last confirmed state.
+
 ### Credits
 - [Sully-](https://github.com/Sully-): for showing me hudhook, sharing code examples, and helping me with debugging the overlay
 - [hudhook](https://github.com/veeenu/hudhook): a rust crate for creating in-game UI overlays, made by Andrea
@@ -70,7 +106,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.
 Choose a different output folder with `-OutputPath`:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -OutputPath .\artifacts\er-overlay
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -OutputPath .\artifacts\absoloot_overlay
 ```
 
 Add `-Zip` to create a distributable archive as well:
@@ -79,11 +115,11 @@ Add `-Zip` to create a distributable archive as well:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -Zip
 ```
 
-The script runs `cargo build --locked --release --target x86_64-pc-windows-msvc`. It copies every file and directory under `dist/` into the output folder, then adds the compiled `er_overlay.dll`. The required packaged layout includes `overlay_config.toml`, the localized `data/` tree, and `er_overlay.dll`.
+The script runs `cargo build --locked --release --target x86_64-pc-windows-msvc`. It copies every file and directory under `dist/` into the output folder, then adds the compiled `absoloot_overlay.dll`. The required packaged layout includes `overlay_config.toml`, the localized `data/` tree, and `absoloot_overlay.dll`.
 
-With `-Zip`, the script creates `er-overlay-<version>-windows-x86_64.zip` beside the output folder. The version comes from the workspace package metadata. The ZIP contains the packaged files at its root, without an extra output-folder wrapper.
+With `-Zip`, the script creates `absoloot_overlay-<version>-windows-x86_64.zip` beside the output folder. The version comes from the workspace package metadata. The ZIP contains the packaged files at its root, without an extra output-folder wrapper.
 
-Packaging uses a temporary staging folder and validates required files before replacing the output. An absent or empty output folder is accepted. A nonempty output folder is replaced only when its adjacent `<output>.er-overlay-release-owner` marker exactly identifies it as output previously created by this script. The marker is not included in the package. The script refuses output folders that are reparse points, including junctions and symbolic links, and refuses to replace nonempty unowned folders. It also refuses to publish a ZIP over a directory, reparse point, or other non-ordinary archive path, and validates a temporary ZIP before publishing it.
+Packaging uses a temporary staging folder and validates required files before replacing the output. An absent or empty output folder is accepted. A nonempty output folder is replaced only when its adjacent `<output>.absoloot_overlay-release-owner` marker exactly identifies it as output previously created by this script. The marker is not included in the package. The script refuses output folders that are reparse points, including junctions and symbolic links, and refuses to replace nonempty unowned folders. It also refuses to publish a ZIP over a directory, reparse point, or other non-ordinary archive path, and validates a temporary ZIP before publishing it.
 
 ## Licensing
 

@@ -41,7 +41,7 @@ use windows_sys::Win32::{
 };
 
 const DEFAULT_PROCESS: &str = "eldenring.exe";
-const DEFAULT_DLL: &str = "er_overlay.dll";
+const DEFAULT_DLL: &str = "absoloot_overlay.dll";
 const DEFAULT_PROCESS_WAIT_SECONDS: u64 = 60;
 const REMOTE_THREAD_TIMEOUT_MS: u32 = 30_000;
 
@@ -104,7 +104,7 @@ impl Drop for RemoteAllocation {
 
 fn main() {
     println!(
-        "--- Ignite Overlay Injector {} ---",
+        "--- absoloot_overlay Injector {} ---",
         env!("CARGO_PKG_VERSION")
     );
     println!("Use only with ELDEN RING running offline/EAC-disabled.\n");
@@ -148,7 +148,7 @@ fn print_help() {
         "Usage: injector.exe [--dll PATH] [--process NAME] [--wait SECONDS]\n\
          \n\
          Defaults:\n\
-           --dll      er_overlay.dll beside injector.exe\n\
+           --dll      absoloot_overlay.dll beside injector.exe\n\
            --process  eldenring.exe\n\
            --wait     60 seconds\n\
          \n\

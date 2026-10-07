@@ -2,14 +2,26 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     mem::{MaybeUninit, size_of},
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
     time::{Duration, Instant},
 };
 
-use eldenring::cs::CSEventFlagMan;
-use fromsoftware_shared::FromStatic;
-use windows_sys::Win32::System::{
-    Diagnostics::Debug::ReadProcessMemory, Threading::GetCurrentProcess,
+use eldenring::{
+    cs::{CSEventFlagMan, CSTaskGroupIndex, CSTaskImp},
+    fd4::FD4TaskData,
 };
+use fromsoftware_shared::{FromStatic, SharedTaskImpExt};
+use windows_sys::Win32::System::{
+    Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory},
+    Threading::GetCurrentProcess,
+};
+
+use crate::{debug_log, overlay::data::SharedState};
 
 const EVENT_FLAG_DIVISOR: usize = 0x1C;
 const FLAG_HOLDER_ENTRY_SIZE: usize = 0x20;
@@ -33,6 +45,7 @@ const INCOMPLETE_CACHE_RETRY: Duration = Duration::from_millis(500);
 const MAX_ENTRY_SIZE: usize = 4_096;
 const MAX_HOLDER_COUNT: usize = 1_000_000;
 const MAX_TREE_WALK: usize = 10_000;
+const WRITER_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
 trait MemoryReader {
     fn read_exact(&self, address: usize, destination: &mut [u8]) -> bool;
@@ -57,6 +70,29 @@ impl MemoryReader for ProcessMemoryReader {
             )
         };
         succeeded != 0 && bytes_read == destination.len()
+    }
+}
+
+trait MemoryWriter {
+    fn write_exact(&mut self, address: usize, source: &[u8]) -> bool;
+}
+
+impl MemoryWriter for ProcessMemoryReader {
+    fn write_exact(&mut self, address: usize, source: &[u8]) -> bool {
+        if address == 0 || source.is_empty() {
+            return false;
+        }
+        let mut bytes_written = 0;
+        let succeeded = unsafe {
+            WriteProcessMemory(
+                GetCurrentProcess(),
+                address as *mut _,
+                source.as_ptr().cast(),
+                source.len(),
+                &mut bytes_written,
+            )
+        };
+        succeeded != 0 && bytes_written == source.len()
     }
 }
 
@@ -258,6 +294,29 @@ fn execute_read_plan<R: MemoryReader>(
     Some(values)
 }
 
+fn execute_write_plan<M: MemoryReader + MemoryWriter>(memory: &mut M, plan: &FlagReadPlan) -> bool {
+    for block in &plan.blocks {
+        let mut masks_by_byte = BTreeMap::<usize, u8>::new();
+        for flag in &block.flags {
+            *masks_by_byte.entry(flag.byte).or_default() |= flag.mask;
+        }
+        for (byte_offset, mask) in masks_by_byte {
+            let Some(address) = block.base.checked_add(byte_offset) else {
+                return false;
+            };
+            let mut byte = [0_u8];
+            if !memory.read_exact(address, &mut byte) {
+                return false;
+            }
+            let updated = [byte[0] | mask];
+            if updated != byte && !memory.write_exact(address, &updated) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 #[derive(Debug)]
 pub enum EventFlagReadError {
     ManagerUnavailable,
@@ -265,6 +324,8 @@ pub enum EventFlagReadError {
     CacheBuildChanged,
     BlockReadFailed,
     ManagerChanged,
+    UnresolvedFlag,
+    BlockWriteFailed,
 }
 
 impl fmt::Display for EventFlagReadError {
@@ -275,8 +336,132 @@ impl fmt::Display for EventFlagReadError {
             Self::CacheBuildChanged => "event flag data changed while building the cache",
             Self::BlockReadFailed => "an event flag block could not be read",
             Self::ManagerChanged => "event flag data changed while reading",
+            Self::UnresolvedFlag => "an event flag could not be resolved",
+            Self::BlockWriteFailed => "an event flag block could not be written",
         })
     }
+}
+
+pub fn set_event_flags(flag_ids: &[i32]) -> Result<(), EventFlagReadError> {
+    if flag_ids.is_empty() {
+        return Ok(());
+    }
+    let mut memory = ProcessMemoryReader;
+    let manager = resolve_event_flag_manager().ok_or(EventFlagReadError::ManagerUnavailable)?;
+    let snapshot =
+        read_manager_snapshot(&memory, manager).ok_or(EventFlagReadError::InvalidManager)?;
+    let plan = build_read_plan(&memory, snapshot, flag_ids)
+        .ok_or(EventFlagReadError::CacheBuildChanged)?;
+    if !plan.unresolved.is_empty() {
+        return Err(EventFlagReadError::UnresolvedFlag);
+    }
+    if !execute_write_plan(&mut memory, &plan) {
+        return Err(EventFlagReadError::BlockWriteFailed);
+    }
+    if read_manager_snapshot(&memory, manager) != Some(snapshot) {
+        return Err(EventFlagReadError::ManagerChanged);
+    }
+    Ok(())
+}
+
+pub fn start_event_flag_writer(
+    state: SharedState,
+    stop: Arc<AtomicBool>,
+    poll_ms: u64,
+) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("absoloot-event-flag-writer".to_string())
+        .spawn(move || {
+            let task_manager = match CSTaskImp::wait_for_instance(Duration::MAX) {
+                Ok(task_manager) => task_manager,
+                Err(error) => {
+                    debug_log!("[event_flags] Could not attach to Elden Ring task manager: {error}");
+                    return;
+                }
+            };
+            let poll_interval = Duration::from_millis(poll_ms.max(10));
+            let mut last_poll = Instant::now()
+                .checked_sub(poll_interval)
+                .unwrap_or_else(Instant::now);
+            let mut next_error_log = Instant::now();
+            let mut disabled = false;
+
+            task_manager.run_recurring(
+                move |_: &FD4TaskData| {
+                    if disabled || stop.load(Ordering::Acquire) || last_poll.elapsed() < poll_interval
+                    {
+                        return;
+                    }
+                    last_poll = Instant::now();
+
+                    let pending_event_flags = state
+                        .read()
+                        .map(|current_state| current_state.pending_event_flags.clone())
+                        .unwrap_or_default();
+                    if pending_event_flags.is_empty() {
+                        return;
+                    }
+
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        // SAFETY: Elden Ring invokes this callback from its task system,
+                        // matching the main-thread exclusivity requirement for instance_mut.
+                        let Ok(flag_manager) = (unsafe { CSEventFlagMan::instance_mut() }) else {
+                            return false;
+                        };
+
+                        for delivery in &pending_event_flags {
+                            let Ok(event_flag) = u32::try_from(delivery.event_flag) else {
+                                continue;
+                            };
+                            if !flag_manager.virtual_memory_flag.get_flag(event_flag) {
+                                flag_manager
+                                    .virtual_memory_flag
+                                    .set_flag(event_flag, true);
+                            }
+                        }
+                        true
+                    }));
+
+                    match result {
+                        Ok(true) => {
+                            if let Ok(mut current_state) = state.write() {
+                                let applied_ids = pending_event_flags
+                                    .iter()
+                                    .map(|delivery| delivery.delivery_id.clone())
+                                    .collect::<Vec<_>>();
+                                current_state
+                                    .pending_event_flags
+                                    .retain(|delivery| !applied_ids.contains(&delivery.delivery_id));
+                                for delivery_id in applied_ids {
+                                    if !current_state
+                                        .applied_event_delivery_ids
+                                        .contains(&delivery_id)
+                                    {
+                                        current_state.applied_event_delivery_ids.push(delivery_id);
+                                    }
+                                }
+                            }
+                        }
+                        Ok(false) => {
+                            if Instant::now() >= next_error_log {
+                                debug_log!(
+                                    "[event_flags] Event flag manager unavailable while applying teammate flags; retrying"
+                                );
+                                next_error_log = Instant::now() + WRITER_ERROR_LOG_INTERVAL;
+                            }
+                        }
+                        Err(_) => {
+                            disabled = true;
+                            debug_log!(
+                                "[event_flags] Event flag writer panicked and has been disabled for this process"
+                            );
+                        }
+                    }
+                },
+                CSTaskGroupIndex::EventMan,
+            );
+        })
+        .expect("event flag writer thread could not be started")
 }
 
 pub struct EventFlagSample {
@@ -347,7 +532,7 @@ mod tests {
         FLAG_GROUP_TREE_HEAD, FLAG_GROUP_TREE_SIZE, FLAG_HOLDER, FLAG_HOLDER_COUNT,
         FLAG_HOLDER_ENTRY_SIZE, NODE_GROUP, NODE_IS_NIL, NODE_LEFT, NODE_LOCATION,
         NODE_LOCATION_MODE, NODE_PARENT, NODE_RIGHT, build_read_plan, execute_read_plan,
-        read_manager_snapshot,
+        execute_write_plan, read_manager_snapshot,
     };
 
     #[derive(Default)]
@@ -364,6 +549,15 @@ mod tests {
                     return false;
                 };
                 *byte = *value;
+            }
+            true
+        }
+    }
+
+    impl super::MemoryWriter for FakeMemory {
+        fn write_exact(&mut self, address: usize, source: &[u8]) -> bool {
+            for (offset, byte) in source.iter().copied().enumerate() {
+                self.bytes.insert(address + offset, byte);
             }
             true
         }
@@ -450,5 +644,20 @@ mod tests {
         let snapshot = read_manager_snapshot(&memory, manager).unwrap();
         memory.write_usize(manager + FLAG_GROUP_TREE_SIZE, 2);
         assert!(build_read_plan(&memory, snapshot, &[1000]).is_none());
+    }
+
+    #[test]
+    fn write_plan_sets_requested_bits_without_clearing_existing_bits() {
+        let (mut memory, manager, block) = one_group_memory(1, 2);
+        memory.write_bytes(block, &[0b0100_0000]);
+        let snapshot = read_manager_snapshot(&memory, manager).unwrap();
+        let plan = build_read_plan(&memory, snapshot, &[1000, 1002]).unwrap();
+
+        assert!(execute_write_plan(&mut memory, &plan));
+
+        let values = execute_read_plan(&memory, &plan).unwrap();
+        assert!(values[&1000]);
+        assert!(values[&1002]);
+        assert_eq!(memory.bytes[&block], 0b1110_0000);
     }
 }

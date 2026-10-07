@@ -1,0 +1,8 @@
+# Download the player-specific competition_config.toml from the Season 2 website.
+# Never share its assignment_token with another player.
+[competition]
+seed_name = "Absoloot Chaos Testing Seed"
+api_url = "https://your-project-ref.supabase.co/functions/v1/absoloot-telemetry"
+assignment_id = "00000000-0000-0000-0000-000000000000"
+assignment_token = "replace-with-the-64-character-player-assignment-token"
+seed_id = "00000000-0000-0000-0000-000000000000"

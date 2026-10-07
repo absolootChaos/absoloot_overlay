@@ -67,6 +67,8 @@ pub struct OverlayConfig {
     pub display_text: String,
     /// Fixed compact-window width in pixels. `None` preserves content sizing.
     pub closed_width: Option<f32>,
+    /// Fixed compact-window height in pixels. `None` preserves content sizing.
+    pub closed_height: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -222,6 +224,9 @@ impl TryFrom<IgniteConfig> for RuntimeConfig {
                     crate::overlay::style::DEFAULT_DISPLAY_TEXT,
                 ),
                 closed_width: overlay.closed_width.map(|width| width.clamp(80.0, 4096.0)),
+                closed_height: overlay
+                    .closed_height
+                    .map(|height| height.clamp(40.0, 4096.0)),
             },
             timer: TimerSettings {
                 mode: timer.as_ref().map(|timer| timer.mode).unwrap_or_default(),
@@ -332,5 +337,22 @@ mod tests {
     #[test]
     fn rejects_removed_freeze_on_boss_flag_setting() {
         assert!(parse_runtime("[timer]\nfreeze_on_boss_flag = 19000800").is_err());
+    }
+
+    #[test]
+    fn parses_and_clamps_compact_window_dimensions() {
+        let minimum = parse_runtime("[overlay]\nclosed_width = 10\nclosed_height = 10")
+            .expect("minimum compact dimensions");
+        assert_eq!(minimum.overlay.closed_width, Some(80.0));
+        assert_eq!(minimum.overlay.closed_height, Some(40.0));
+
+        let maximum = parse_runtime("[overlay]\nclosed_width = 10000\nclosed_height = 10000")
+            .expect("maximum compact dimensions");
+        assert_eq!(maximum.overlay.closed_width, Some(4096.0));
+        assert_eq!(maximum.overlay.closed_height, Some(4096.0));
+
+        let automatic = parse_runtime("").expect("automatic compact dimensions");
+        assert_eq!(automatic.overlay.closed_width, None);
+        assert_eq!(automatic.overlay.closed_height, None);
     }
 }

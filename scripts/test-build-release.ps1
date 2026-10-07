@@ -26,9 +26,9 @@ $ownsReparseOutput = $false
 $ownsReparseArchive = $false
 $ownsArchiveFileLink = $false
 $ownsAncestorLink = $false
-$markerMagic = 'er-overlay-release-owner'
+$markerMagic = 'absoloot_overlay-release-owner'
 $markerVersion = 'version=1'
-$markerSuffix = '.er-overlay-release-owner'
+$markerSuffix = '.absoloot_overlay-release-owner'
 $distPath = Join-Path $repoRoot 'dist'
 $manifestPath = [IO.Path]::GetFullPath((Join-Path $repoRoot 'Cargo.toml'))
 $metadataJson = & cargo metadata --locked --no-deps --format-version 1 `
@@ -44,7 +44,7 @@ $rootPackage = @($metadata.packages | Where-Object {
 if ($rootPackage.Count -ne 1) {
     throw 'Cargo metadata did not contain exactly one workspace root package'
 }
-$archivePath = Join-Path $testRoot "er-overlay-$($rootPackage[0].version)-windows-x86_64.zip"
+$archivePath = Join-Path $testRoot "absoloot_overlay-$($rootPackage[0].version)-windows-x86_64.zip"
 
 if (-not ('ErOverlayReleaseTestNativeEnvironment' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -153,7 +153,7 @@ function Assert-PackagedLayout {
 
     $distInventory = Get-DirectoryInventory -Root $distPath
     $packageInventory = Get-DirectoryInventory -Root $Path
-    $expectedFiles = @($distInventory.Files) + @('er_overlay.dll')
+    $expectedFiles = @($distInventory.Files) + @('absoloot_overlay.dll')
     Assert-InventorySetEqual -Label 'Packaged file' -Expected $expectedFiles `
         -Actual @($packageInventory.Files)
     Assert-InventorySetEqual -Label 'Packaged directory' -Expected @($distInventory.Directories) `
@@ -322,7 +322,7 @@ function Assert-ConfiguredTargetRustFlagsPreserved {
     $savedTargetFlags = Get-ProcessEnvironmentSnapshot -Names @($variableName)
     [Environment]::SetEnvironmentVariable(
         $variableName,
-        '--er-overlay-invalid-configured-target-flag',
+        '--absoloot_overlay-invalid-configured-target-flag',
         'Process'
     )
     $environmentSnapshot = Get-ProcessEnvironmentSnapshot -Names $environmentNames
@@ -429,7 +429,7 @@ function Assert-SpacedUserProfileBuild {
 
         & (Join-Path $PSScriptRoot 'build-release.ps1') -OutputPath $Path
         Assert-PackagedLayout -Path $Path
-        Assert-NoUserProfilePathInBinary -Path (Join-Path $Path 'er_overlay.dll') `
+        Assert-NoUserProfilePathInBinary -Path (Join-Path $Path 'absoloot_overlay.dll') `
             -UserProfile $ActualUserProfile
     } finally {
         Restore-ProcessEnvironmentSnapshot -Snapshot $environmentSnapshot
@@ -485,7 +485,7 @@ function Assert-ArchiveLayout {
         $archiveEntries = @($archive.Entries)
         $archiveInventory = Get-ArchiveInventory -Entries $archiveEntries
         $distInventory = Get-DirectoryInventory -Root $distPath
-        $expectedFiles = @($distInventory.Files) + @('er_overlay.dll')
+        $expectedFiles = @($distInventory.Files) + @('absoloot_overlay.dll')
         Assert-InventorySetEqual -Label 'Archive file' -Expected $expectedFiles `
             -Actual @($archiveInventory.Files)
         Assert-InventorySetEqual -Label 'Archive directory' -Expected @($distInventory.Directories) `
@@ -689,7 +689,7 @@ try {
     Assert-ProcessEnvironmentSnapshot -Expected $releaseEnvironmentSnapshot `
         -Label 'Successful release build'
     Assert-PackagedLayout -Path $outputPath
-    Assert-NoUserProfilePathInBinary -Path (Join-Path $outputPath 'er_overlay.dll')
+    Assert-NoUserProfilePathInBinary -Path (Join-Path $outputPath 'absoloot_overlay.dll')
     Assert-ExistingRustcWrapperNested -Path $configuredFlagsOutputPath
     $actualUserProfile = $env:USERPROFILE
     if ([string]::IsNullOrWhiteSpace($actualUserProfile)) {

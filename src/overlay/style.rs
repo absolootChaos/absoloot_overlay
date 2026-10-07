@@ -58,6 +58,7 @@ pub struct Boss {
 pub struct Overlay {
     pub display_text: Option<String>,
     pub closed_width: Option<f32>,
+    pub closed_height: Option<f32>,
 }
 
 pub fn apply_runtime_font_scale(imgui: &mut Context, cfg: &RuntimeConfig) {
@@ -127,6 +128,7 @@ pub fn apply_style_config(imgui: &mut Context, cfg: &RuntimeConfig) {
     color!(check_mark_color, StyleColor::CheckMark);
     color!(bg_color, StyleColor::WindowBg);
     color!(border_color, StyleColor::Border);
+    color!(border_color, StyleColor::Separator);
 
     // --- buttons ---
     color!(button_color, StyleColor::Button);
@@ -199,10 +201,10 @@ pub fn apply_common_config(imgui: &mut Context, cfg: &RuntimeConfig) {
                 }]);
                 font_loaded = true;
                 font_used = format!("system charset font: {}", charset);
-                debug_log!("[ignite_overlay] ✅ Loaded charset font '{}'", charset);
+                debug_log!("[absoloot_overlay] ✅ Loaded charset font '{}'", charset);
             } else {
                 debug_log!(
-                    "[ignite_overlay] ⚠ Charset font '{}' not found at {}",
+                    "[absoloot_overlay] ⚠ Charset font '{}' not found at {}",
                     charset,
                     path
                 );
@@ -223,9 +225,9 @@ pub fn apply_common_config(imgui: &mut Context, cfg: &RuntimeConfig) {
             }]);
             font_loaded = true;
             font_used = path.to_string();
-            debug_log!("[ignite_overlay] ✅ Loaded user font '{}'", path);
+            debug_log!("[absoloot_overlay] ✅ Loaded user font '{}'", path);
         } else {
-            debug_log!("[ignite_overlay] ⚠ Could not read font '{}'", path);
+            debug_log!("[absoloot_overlay] ⚠ Could not read font '{}'", path);
         }
     }
 
@@ -238,7 +240,7 @@ pub fn apply_common_config(imgui: &mut Context, cfg: &RuntimeConfig) {
         }]);
         font_used = "EmbeddedFont".to_string();
         font_loaded = true;
-        debug_log!("[ignite_overlay] ✅ Loaded embedded font");
+        debug_log!("[absoloot_overlay] ✅ Loaded embedded font");
     }
 
     // --- 4️⃣ Final fallback: ImGui default font ---
@@ -250,11 +252,11 @@ pub fn apply_common_config(imgui: &mut Context, cfg: &RuntimeConfig) {
             }),
         }]);
         font_used = "ImGui Default".to_string();
-        debug_log!("[ignite_overlay] ⚠ Fallback to ImGui default font");
+        debug_log!("[absoloot_overlay] ⚠ Fallback to ImGui default font");
     }
 
     debug_log!(
-        "[ignite_overlay] 🧩 Font configured: '{}' at {:.1}px; waiting for hudhook atlas upload",
+        "[absoloot_overlay] 🧩 Font configured: '{}' at {:.1}px; waiting for hudhook atlas upload",
         font_used,
         font_size
     );

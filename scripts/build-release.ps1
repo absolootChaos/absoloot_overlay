@@ -193,9 +193,9 @@ if ([string]::Equals(
 )) {
     throw "Unsafe output path: $resolvedOutput"
 }
-$markerMagic = 'er-overlay-release-owner'
+$markerMagic = 'absoloot_overlay-release-owner'
 $markerVersion = 'version=1'
-$markerPath = Resolve-SafeCanonicalPath -Path "$resolvedOutput.er-overlay-release-owner" `
+$markerPath = Resolve-SafeCanonicalPath -Path "$resolvedOutput.absoloot_overlay-release-owner" `
     -ReparseErrorPrefix 'Unsafe ownership marker path:'
 $expectedMarker = "$markerMagic`r`n$markerVersion`r`noutput=$resolvedOutput"
 
@@ -371,8 +371,8 @@ function Assert-ArchiveLayout {
         $entryNames = @($archiveEntries | ForEach-Object {
             $_.FullName.Replace('\', '/')
         })
-        if ('er_overlay.dll' -notin $entryNames) {
-            throw "Archive is missing er_overlay.dll: $Path"
+        if ('absoloot_overlay.dll' -notin $entryNames) {
+            throw "Archive is missing absoloot_overlay.dll: $Path"
         }
         if ('overlay_config.toml' -notin $entryNames) {
             throw "Archive is missing overlay_config.toml: $Path"
@@ -421,7 +421,7 @@ $archiveName = $null
 $archivePath = $null
 if ($Zip) {
     $packageVersion = Get-WorkspaceRootPackageVersion -RepositoryRoot $repoRoot
-    $archiveName = "er-overlay-$packageVersion-windows-x86_64.zip"
+    $archiveName = "absoloot_overlay-$packageVersion-windows-x86_64.zip"
     $archivePath = Resolve-SafeCanonicalPath `
         -Path (Join-Path (Split-Path -Parent $resolvedOutput) $archiveName) `
         -ReparseErrorPrefix 'Unsafe archive path is not an ordinary file:'
@@ -495,7 +495,7 @@ try {
     Pop-Location
 }
 
-$dllPath = Join-Path $releaseTargetDir 'x86_64-pc-windows-msvc\release\er_overlay.dll'
+$dllPath = Join-Path $releaseTargetDir 'x86_64-pc-windows-msvc\release\absoloot_overlay.dll'
 $distPath = Join-Path $repoRoot 'dist'
 if (-not (Test-Path -LiteralPath $dllPath -PathType Leaf)) {
     throw "Built DLL was not found: $dllPath"
@@ -514,7 +514,7 @@ Assert-CanonicalPathIdentity -Path $outputParent -ExpectedCanonicalPath $outputP
     -IdentityErrorPrefix 'Output parent path identity changed:'
 $outputName = Split-Path -Leaf $resolvedOutput
 $stagingPath = Resolve-SafeCanonicalPath `
-    -Path (Join-Path $outputParent ".$outputName.er-overlay-staging-$([Guid]::NewGuid().ToString('N'))") `
+    -Path (Join-Path $outputParent ".$outputName.absoloot_overlay-staging-$([Guid]::NewGuid().ToString('N'))") `
     -ReparseErrorPrefix 'Unsafe release staging path:'
 $ownsStagingPath = $false
 
@@ -525,9 +525,9 @@ try {
         -ReparseErrorPrefix 'Unsafe release staging path:' `
         -IdentityErrorPrefix 'Release staging path identity changed:'
     Copy-Item -Path (Join-Path $distPath '*') -Destination $stagingPath -Recurse -Force
-    Copy-Item -LiteralPath $dllPath -Destination (Join-Path $stagingPath 'er_overlay.dll') -Force
+    Copy-Item -LiteralPath $dllPath -Destination (Join-Path $stagingPath 'absoloot_overlay.dll') -Force
 
-    $stagedDllPath = Join-Path $stagingPath 'er_overlay.dll'
+    $stagedDllPath = Join-Path $stagingPath 'absoloot_overlay.dll'
     $stagedConfigPath = Join-Path $stagingPath 'overlay_config.toml'
     $stagedDataPath = Join-Path $stagingPath 'data'
     if (-not (Test-Path -LiteralPath $stagedDllPath -PathType Leaf)) {
@@ -576,7 +576,7 @@ try {
 Write-Host "Release folder: $resolvedOutput"
 
 if ($Zip) {
-    $temporaryArchiveName = ".$archiveName.er-overlay-staging-$([Guid]::NewGuid().ToString('N')).zip"
+    $temporaryArchiveName = ".$archiveName.absoloot_overlay-staging-$([Guid]::NewGuid().ToString('N')).zip"
     $temporaryArchivePath = Resolve-SafeCanonicalPath `
         -Path (Join-Path $outputParent $temporaryArchiveName) `
         -ReparseErrorPrefix 'Unsafe temporary archive path:'
@@ -601,7 +601,7 @@ if ($Zip) {
 
         $archiveState = Get-ArchiveState -Path $archivePath
         if ($archiveState -eq 'OrdinaryFile') {
-            $archiveBackupName = ".$archiveName.er-overlay-backup-$([Guid]::NewGuid().ToString('N'))"
+            $archiveBackupName = ".$archiveName.absoloot_overlay-backup-$([Guid]::NewGuid().ToString('N'))"
             $archiveBackupPath = Resolve-SafeCanonicalPath `
                 -Path (Join-Path $outputParent $archiveBackupName) `
                 -ReparseErrorPrefix 'Unsafe archive backup path:'

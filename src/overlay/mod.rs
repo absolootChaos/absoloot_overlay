@@ -1,4 +1,5 @@
 pub mod boss_panel;
+pub mod competition;
 pub mod config;
 pub mod data;
 pub mod embedded_font;

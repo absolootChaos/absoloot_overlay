@@ -12,8 +12,9 @@ use crossbeam::channel::Sender;
 
 use crate::{
     debug_log,
-    er::{events::EventFlagCache, gamedata::read_game_data, inventory::get_key_item_quantity},
+    er::{events::EventFlagCache, gamedata::read_game_data, inventory::try_get_key_item_quantity},
     overlay::{
+        competition::CompetitionSettings,
         config::{ConfigSnapshot, SharedConfig, VictoryCondition},
         data::SharedState,
         victory::VictoryTracker,
@@ -22,6 +23,7 @@ use crate::{
 
 const GREAT_RUNE_FLAGS: [i32; 7] = [181, 182, 183, 184, 185, 186, 187];
 const ERROR_LOG_INTERVAL: Duration = Duration::from_secs(5);
+const TELEMETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 pub(crate) fn is_great_rune_flag(flag_id: i32) -> bool {
     GREAT_RUNE_FLAGS.contains(&flag_id)
@@ -92,6 +94,19 @@ fn configured_victory(config: &SharedConfig) -> ConfiguredVictory {
     ConfiguredVictory::from(&*snapshot)
 }
 
+fn configured_victory_for_competition(
+    config: &SharedConfig,
+    competition: Option<&CompetitionSettings>,
+) -> ConfiguredVictory {
+    let mut configured = configured_victory(config);
+    if competition.is_some() {
+        // Competition completion is authoritative on the server because it may
+        // require both the victory flag and a team-wide shard threshold.
+        configured.condition = VictoryCondition::None;
+    }
+    configured
+}
+
 fn reconfigure_victory(
     configured: &mut ConfiguredVictory,
     latest: ConfiguredVictory,
@@ -132,8 +147,23 @@ fn monitored_flag_ids(boss_flag_ids: &HashSet<i32>, victory: &VictoryTracker) ->
         .collect()
 }
 
-fn create_flag_cache(boss_flag_ids: &HashSet<i32>, victory: &VictoryTracker) -> EventFlagCache {
-    EventFlagCache::new(monitored_flag_ids(boss_flag_ids, victory))
+fn create_competition_flag_cache(
+    boss_flag_ids: &HashSet<i32>,
+    victory: &VictoryTracker,
+    competition: Option<&CompetitionSettings>,
+) -> EventFlagCache {
+    let competition_flags = competition.into_iter().flat_map(|settings| {
+        settings
+            .shard_event_flags
+            .iter()
+            .copied()
+            .chain(std::iter::once(settings.win_condition_flag))
+    });
+    EventFlagCache::new(
+        monitored_flag_ids(boss_flag_ids, victory)
+            .into_iter()
+            .chain(competition_flags),
+    )
 }
 
 fn merge_boss_flags(
@@ -155,9 +185,15 @@ fn merge_boss_flags(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MonitorObservation {
     pub active_boss_flags: Vec<i32>,
+    pub active_event_flags: Vec<i32>,
+    pub current_igt_ms: u32,
+    pub death_count: u32,
+    pub check_count: u32,
+    pub shard_count: u32,
     pub observed_at: SystemTime,
 }
 
+#[cfg(test)]
 fn build_monitor_observation(
     sampled: &HashMap<i32, bool>,
     boss_flag_ids: &HashSet<i32>,
@@ -169,8 +205,50 @@ fn build_monitor_observation(
         .copied()
         .collect::<Vec<_>>();
     active_boss_flags.sort_unstable();
+    let check_count = active_boss_flags.len() as u32;
     MonitorObservation {
         active_boss_flags,
+        active_event_flags: Vec::new(),
+        current_igt_ms: 0,
+        death_count: 0,
+        check_count,
+        shard_count: 0,
+        observed_at,
+    }
+}
+
+fn build_competition_observation(
+    sampled: &HashMap<i32, bool>,
+    boss_flag_ids: &HashSet<i32>,
+    settings: &CompetitionSettings,
+    current_igt_ms: u32,
+    death_count: u32,
+    shard_count: u32,
+    observed_at: SystemTime,
+) -> MonitorObservation {
+    let mut active_event_flags = settings
+        .shard_event_flags
+        .iter()
+        .copied()
+        .chain(std::iter::once(settings.win_condition_flag))
+        .filter(|flag_id| sampled.get(flag_id).copied().unwrap_or(false))
+        .collect::<Vec<_>>();
+    active_event_flags.sort_unstable();
+    active_event_flags.dedup();
+    let mut active_check_flags = boss_flag_ids
+        .iter()
+        .copied()
+        .filter(|flag_id| sampled.get(flag_id).copied().unwrap_or(false))
+        .collect::<Vec<_>>();
+    active_check_flags.sort_unstable();
+    active_check_flags.dedup();
+    MonitorObservation {
+        check_count: active_check_flags.len() as u32,
+        active_boss_flags: active_check_flags,
+        active_event_flags,
+        current_igt_ms,
+        death_count,
+        shard_count,
         observed_at,
     }
 }
@@ -212,6 +290,7 @@ pub fn start_game_monitor(
     poll_ms: u64,
     stop: Arc<AtomicBool>,
     observation_tx: Option<Sender<MonitorObservation>>,
+    competition: Option<CompetitionSettings>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let update_interval = Duration::from_millis(poll_ms.max(10));
@@ -219,10 +298,11 @@ pub fn start_game_monitor(
             .into_iter()
             .filter(|flag_id| !is_great_rune_flag(*flag_id))
             .collect();
-        let mut configured = configured_victory(&config);
+        let mut configured = configured_victory_for_competition(&config, competition.as_ref());
         let mut victory =
             VictoryTracker::new(configured.condition.clone(), boss_flag_ids.iter().copied());
-        let mut flag_cache = create_flag_cache(&boss_flag_ids, &victory);
+        let mut flag_cache =
+            create_competition_flag_cache(&boss_flag_ids, &victory, competition.as_ref());
         let (
             mut published_flags,
             mut published_quantity,
@@ -237,15 +317,20 @@ pub fn start_game_monitor(
         let mut published_igt = initial_published_igt(&igt);
         let mut next_flag_error_log = Instant::now();
         let mut last_unresolved_count = None;
+        let mut next_telemetry = Instant::now();
+        if let Ok(mut current_state) = state.write() {
+            current_state.total_check_count = boss_flag_ids.len() as u32;
+        }
 
         while !stop.load(Ordering::Acquire) {
             let cycle_started = Instant::now();
-            let latest = configured_victory(&config);
+            let latest = configured_victory_for_competition(&config, competition.as_ref());
             if reconfigure_victory(&mut configured, latest, &mut victory) {
-                flag_cache = create_flag_cache(&boss_flag_ids, &victory);
+                flag_cache =
+                    create_competition_flag_cache(&boss_flag_ids, &victory, competition.as_ref());
                 last_unresolved_count = None;
                 debug_log!(
-                    "[ignite_overlay] Victory condition changed to {:?}",
+                    "[absoloot_overlay] Victory condition changed to {:?}",
                     victory.condition()
                 );
             }
@@ -253,12 +338,19 @@ pub fn start_game_monitor(
             let mut flags_changed = boss_flags_need_publish;
             let mut completed_this_cycle = false;
             let game_data = read_game_data();
+            let key_item_quantity = try_get_key_item_quantity(key_item_id);
+            let player_is_loaded = game_data.is_some() && key_item_quantity.is_some();
+            let player_game_time = if player_is_loaded {
+                game_data.map(|snapshot| snapshot.play_time_ms)
+            } else {
+                None
+            };
             match flag_cache.sample(cycle_started) {
                 Ok(sample) => {
                     match observe_if_current(
                         &config,
                         configured.revision,
-                        game_data.map(|snapshot| snapshot.play_time_ms),
+                        player_game_time,
                         &mut victory,
                         &sample.values,
                         &sample.unresolved,
@@ -270,13 +362,30 @@ pub fn start_game_monitor(
                                 &sample.values,
                                 &boss_flag_ids,
                             );
-                            if flags_changed && let Some(sender) = observation_tx.as_ref() {
-                                let observation = build_monitor_observation(
-                                    &published_flags,
+                            if let (Some(settings), Some(sender), Some(game_data), Some(quantity)) = (
+                                competition.as_ref(),
+                                observation_tx.as_ref(),
+                                game_data,
+                                key_item_quantity,
+                            ) && (cycle_started >= next_telemetry || completed_this_cycle)
+                            {
+                                let telemetry_igt =
+                                    if victory.is_complete() && !completed_this_cycle {
+                                        published_igt
+                                    } else {
+                                        game_data.play_time_ms
+                                    };
+                                let observation = build_competition_observation(
+                                    &sample.values,
                                     &boss_flag_ids,
+                                    settings,
+                                    telemetry_igt,
+                                    game_data.death_count,
+                                    quantity,
                                     SystemTime::now(),
                                 );
-                                let _ = sender.send(observation);
+                                let _ = sender.try_send(observation);
+                                next_telemetry = cycle_started + TELEMETRY_INTERVAL;
                             }
                             for (flag_id, value) in sample.values {
                                 if is_great_rune_flag(flag_id) {
@@ -297,10 +406,14 @@ pub fn start_game_monitor(
                         }
                         SampleObservation::Stale(latest) => {
                             if reconfigure_victory(&mut configured, latest, &mut victory) {
-                                flag_cache = create_flag_cache(&boss_flag_ids, &victory);
+                                flag_cache = create_competition_flag_cache(
+                                    &boss_flag_ids,
+                                    &victory,
+                                    competition.as_ref(),
+                                );
                                 last_unresolved_count = None;
                                 debug_log!(
-                                    "[ignite_overlay] Victory condition changed to {:?}",
+                                    "[absoloot_overlay] Victory condition changed to {:?}",
                                     victory.condition()
                                 );
                             }
@@ -319,10 +432,14 @@ pub fn start_game_monitor(
                 .iter()
                 .filter(|flag| sampled_rune_flags.get(flag).copied().unwrap_or(false))
                 .count() as i32;
-            let quantity = get_key_item_quantity(key_item_id);
-            let deaths = game_data
-                .map(|snapshot| snapshot.death_count)
-                .unwrap_or(published_deaths);
+            let quantity = key_item_quantity.unwrap_or(published_quantity);
+            let deaths = if player_is_loaded {
+                game_data
+                    .map(|snapshot| snapshot.death_count)
+                    .unwrap_or(published_deaths)
+            } else {
+                published_deaths
+            };
             let state_changed = flags_changed
                 || quantity != published_quantity
                 || deaths != published_deaths
@@ -330,6 +447,7 @@ pub fn start_game_monitor(
                 || victory.is_complete() != published_goal_complete;
             let game_time_to_publish = if !victory.is_complete() || completed_this_cycle {
                 game_data
+                    .filter(|_| player_is_loaded)
                     .map(|snapshot| snapshot.play_time_ms)
                     .filter(|game_time| *game_time != published_igt)
             } else {
@@ -364,7 +482,7 @@ pub fn start_game_monitor(
             }
             if completed_this_cycle {
                 debug_log!(
-                    "[ignite_overlay] Victory condition {:?} completed at {published_igt} ms",
+                    "[absoloot_overlay] Victory condition {:?} completed at {published_igt} ms",
                     victory.condition()
                 );
             }
@@ -373,7 +491,7 @@ pub fn start_game_monitor(
                 thread::sleep(remaining);
             }
         }
-        debug_log!("[ignite_overlay] Monitor thread exiting gracefully");
+        debug_log!("[absoloot_overlay] Monitor thread exiting gracefully");
     })
 }
 

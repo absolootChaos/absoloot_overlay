@@ -14,7 +14,7 @@ pub fn init_tracing() -> bool {
     static TRACING_READY: OnceLock<bool> = OnceLock::new();
     *TRACING_READY.get_or_init(|| {
         let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("warn,hudhook=debug,er_overlay=debug"));
+            .unwrap_or_else(|_| EnvFilter::new("warn,hudhook=debug,absoloot_overlay=debug"));
 
         tracing_subscriber::fmt()
             .with_env_filter(filter)
@@ -96,7 +96,7 @@ pub fn attach_console() -> bool {
         CONSOLE_READY.store(true, Ordering::Release);
 
         let mut stderr = io::stderr().lock();
-        let _ = writeln!(stderr, "--- Ignite Overlay Console ({source}) ---");
+        let _ = writeln!(stderr, "--- absoloot_overlay Console ({source}) ---");
         let _ = stderr.flush();
         true
     }
