@@ -9,6 +9,11 @@ This is an in-game overlay for ELDEN RING with the ability to track the followin
   - This is compatible with Matt's Randomizer (it has custom logic that splits Kindling into shards required burn the sealing tree)
 5. Number of Great Runes player has acquired
 
+Competition manifests can independently track unique shards and unique great
+runes. A seed explicitly chooses `shards`, `great_runes`, or `both` for the
+compact overlay, and either category can have an optional team-wide unique
+collectible requirement before the victory flag freezes the run.
+
 ---
 
 ## Victory conditions
@@ -62,6 +67,11 @@ both checks and shard locations across the team. When a seed has an optional
 unique-shard requirement, the configured win flag does not freeze a player's
 IGT until the team has also reached that shard total.
 
+Each seed option may configure unique shard flags, unique great-rune flags, or
+both. The two categories are tracked independently and deduplicated across the
+team. The competition scorecard only renders the collectible rows enabled for
+that seed; existing shard-only seeds keep their current layout.
+
 When competition configuration is present, compact mode uses a fixed scorecard
 inspired by the Ignite Nightreign overlay. It shows the seed name followed by
 player and team columns for IGT, checks, shards, and deaths. The team shard value
@@ -76,6 +86,8 @@ variables in `overlay_config.toml`:
 
 - `{player_shards}`: unique configured shard locations found by this player
 - `{team_shards}`: unique configured shard locations found by either teammate
+- `{player_great_runes}`: unique configured great-rune flags found by this player
+- `{team_great_runes}`: unique configured great-rune flags found by either teammate
 - `{teammate_igt}`: the teammate's latest IGT, or their frozen finish IGT
 - `{combined_igt}`: the sum of both frozen finish IGTs
 

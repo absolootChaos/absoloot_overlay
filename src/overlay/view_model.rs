@@ -27,10 +27,24 @@ pub struct CompetitionPanel {
     pub combined_checks: String,
     pub shards: String,
     pub combined_unique_shards: String,
+    pub shows_shards: bool,
+    pub great_runes: String,
+    pub combined_unique_great_runes: String,
+    pub shows_great_runes: bool,
     pub deaths: String,
     pub combined_deaths: String,
     pub shard_goal_notice: Option<String>,
+    pub great_rune_goal_notice: Option<String>,
     pub victory_flag_reached: bool,
+}
+
+impl CompetitionPanel {
+    pub fn line_count(&self) -> usize {
+        6 + usize::from(self.shows_shards)
+            + usize::from(self.shows_great_runes)
+            + usize::from(self.shard_goal_notice.is_some())
+            + usize::from(self.great_rune_goal_notice.is_some())
+    }
 }
 
 impl OverlayViewModel {
@@ -81,6 +95,20 @@ impl OverlayViewModel {
                     .to_string(),
             ),
             (
+                "player_great_runes",
+                state
+                    .map(|state| state.player_great_rune_count)
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            (
+                "team_great_runes",
+                state
+                    .map(|state| state.team_unique_great_rune_count)
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            (
                 "teammate_igt",
                 optional_duration(state.and_then(|state| {
                     state
@@ -127,6 +155,17 @@ impl OverlayViewModel {
                     )
                 })
         });
+        let great_rune_goal_notice = state.and_then(|state| {
+            state
+                .required_unique_great_runes
+                .filter(|_| state.great_rune_requirement_met)
+                .map(|required| {
+                    format!(
+                        "TEAM GREAT RUNE GOAL REACHED  {}/{}",
+                        state.team_unique_great_rune_count, required
+                    )
+                })
+        });
         model.competition = Some(CompetitionPanel {
             seed_name: settings.seed_name.clone(),
             current_igt,
@@ -144,19 +183,30 @@ impl OverlayViewModel {
                 })
                 .unwrap_or_else(|| "--".to_string()),
             shards: state
-                .map(|state| state.key_item_quantity)
+                .map(|state| state.player_shard_count)
                 .unwrap_or(0)
                 .to_string(),
             combined_unique_shards: state
                 .map(|state| state.team_unique_shard_count)
                 .unwrap_or(0)
                 .to_string(),
+            shows_shards: settings.collectible_display_mode.shows_shards(),
+            great_runes: state
+                .map(|state| state.player_great_rune_count)
+                .unwrap_or(0)
+                .to_string(),
+            combined_unique_great_runes: state
+                .map(|state| state.team_unique_great_rune_count)
+                .unwrap_or(0)
+                .to_string(),
+            shows_great_runes: settings.collectible_display_mode.shows_great_runes(),
             deaths: state
                 .map(|state| state.death_count)
                 .unwrap_or(0)
                 .to_string(),
             combined_deaths: optional_count(state.and_then(|state| state.combined_death_count)),
             shard_goal_notice,
+            great_rune_goal_notice,
             victory_flag_reached: state.is_some_and(|state| state.victory_flag_reached),
         });
         model
@@ -213,7 +263,10 @@ fn format_duration(milliseconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use crate::overlay::{
-        competition::CompetitionSettings, config::TimerSettings, data::AppState, style::TimerMode,
+        competition::{CollectibleDisplayMode, CompetitionSettings},
+        config::TimerSettings,
+        data::AppState,
+        style::TimerMode,
     };
 
     use super::{OverlayViewModel, format_duration, format_timer};
@@ -341,8 +394,13 @@ mod tests {
             team_unique_check_count: 5,
             total_check_count: 34,
             team_unique_shard_count: 4,
+            player_shard_count: 2,
+            player_great_rune_count: 1,
+            team_unique_great_rune_count: 2,
             required_unique_shards: Some(4),
             shard_requirement_met: true,
+            required_unique_great_runes: Some(2),
+            great_rune_requirement_met: true,
             combined_current_igt_ms: Some(7_322_000),
             combined_check_count: Some(5),
             combined_death_count: Some(6),
@@ -357,7 +415,11 @@ mod tests {
             seed_id: "seed".to_string(),
             win_condition_flag: 20_010_800,
             shard_event_flags: vec![2_046_410_800],
+            great_rune_event_flags: vec![2_051_440_800],
+            event_flag_mirrors: vec![],
             required_unique_shards: Some(4),
+            required_unique_great_runes: Some(2),
+            collectible_display_mode: CollectibleDisplayMode::Both,
             death_link_enabled: false,
             death_link_rebound_seconds: 30,
         };
@@ -377,11 +439,20 @@ mod tests {
         assert_eq!(panel.combined_checks, "5/34");
         assert_eq!(panel.shards, "2");
         assert_eq!(panel.combined_unique_shards, "4");
+        assert!(panel.shows_shards);
+        assert_eq!(panel.great_runes, "1");
+        assert_eq!(panel.combined_unique_great_runes, "2");
+        assert!(panel.shows_great_runes);
+        assert_eq!(panel.line_count(), 10);
         assert_eq!(panel.deaths, "3");
         assert_eq!(panel.combined_deaths, "6");
         assert_eq!(
             panel.shard_goal_notice.as_deref(),
             Some("TEAM SHARD GOAL REACHED  4/4")
+        );
+        assert_eq!(
+            panel.great_rune_goal_notice.as_deref(),
+            Some("TEAM GREAT RUNE GOAL REACHED  2/2")
         );
     }
 }

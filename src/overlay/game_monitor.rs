@@ -157,7 +157,14 @@ fn create_competition_flag_cache(
             .shard_event_flags
             .iter()
             .copied()
+            .chain(settings.great_rune_event_flags.iter().copied())
             .chain(std::iter::once(settings.win_condition_flag))
+            .chain(
+                settings
+                    .event_flag_mirrors
+                    .iter()
+                    .map(|mapping| mapping.source_event_flag),
+            )
     });
     EventFlagCache::new(
         monitored_flag_ids(boss_flag_ids, victory)
@@ -186,6 +193,7 @@ fn merge_boss_flags(
 pub struct MonitorObservation {
     pub active_boss_flags: Vec<i32>,
     pub active_event_flags: Vec<i32>,
+    pub active_mirror_flags: Vec<i32>,
     pub current_igt_ms: u32,
     pub death_count: u32,
     pub check_count: u32,
@@ -209,6 +217,7 @@ fn build_monitor_observation(
     MonitorObservation {
         active_boss_flags,
         active_event_flags: Vec::new(),
+        active_mirror_flags: Vec::new(),
         current_igt_ms: 0,
         death_count: 0,
         check_count,
@@ -230,11 +239,20 @@ fn build_competition_observation(
         .shard_event_flags
         .iter()
         .copied()
+        .chain(settings.great_rune_event_flags.iter().copied())
         .chain(std::iter::once(settings.win_condition_flag))
         .filter(|flag_id| sampled.get(flag_id).copied().unwrap_or(false))
         .collect::<Vec<_>>();
     active_event_flags.sort_unstable();
     active_event_flags.dedup();
+    let mut active_mirror_flags = settings
+        .event_flag_mirrors
+        .iter()
+        .map(|mapping| mapping.source_event_flag)
+        .filter(|flag_id| sampled.get(flag_id).copied().unwrap_or(false))
+        .collect::<Vec<_>>();
+    active_mirror_flags.sort_unstable();
+    active_mirror_flags.dedup();
     let mut active_check_flags = boss_flag_ids
         .iter()
         .copied()
@@ -246,6 +264,7 @@ fn build_competition_observation(
         check_count: active_check_flags.len() as u32,
         active_boss_flags: active_check_flags,
         active_event_flags,
+        active_mirror_flags,
         current_igt_ms,
         death_count,
         shard_count,

@@ -31,6 +31,35 @@ fn default_death_link_rebound_seconds() -> u64 {
     DEFAULT_DEATH_LINK_REBOUND_SECONDS
 }
 
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectibleDisplayMode {
+    #[default]
+    Shards,
+    GreatRunes,
+    Both,
+}
+
+impl CollectibleDisplayMode {
+    pub fn shows_shards(self) -> bool {
+        matches!(self, Self::Shards | Self::Both)
+    }
+
+    pub fn shows_great_runes(self) -> bool {
+        matches!(self, Self::GreatRunes | Self::Both)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct EventFlagMirror {
+    pub source_event_flag: i32,
+    pub target_event_flag: i32,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CompetitionSettings {
@@ -45,7 +74,15 @@ pub struct CompetitionSettings {
     #[serde(default)]
     pub shard_event_flags: Vec<i32>,
     #[serde(default)]
+    pub great_rune_event_flags: Vec<i32>,
+    #[serde(default)]
+    pub event_flag_mirrors: Vec<EventFlagMirror>,
+    #[serde(default)]
     pub required_unique_shards: Option<u32>,
+    #[serde(default)]
+    pub required_unique_great_runes: Option<u32>,
+    #[serde(default)]
+    pub collectible_display_mode: CollectibleDisplayMode,
     #[serde(default)]
     pub death_link_enabled: bool,
     #[serde(default = "default_death_link_rebound_seconds")]
@@ -74,11 +111,26 @@ struct ManifestResponse {
     seed_id: String,
     win_condition_flag: i32,
     required_unique_shards: Option<u32>,
+    #[serde(default)]
+    required_unique_great_runes: Option<u32>,
+    #[serde(default)]
+    collectible_display_mode: CollectibleDisplayMode,
     shard_flags: Vec<ManifestShard>,
+    #[serde(default)]
+    great_rune_flags: Vec<ManifestShard>,
+    #[serde(default)]
+    event_flag_mirrors: Vec<ManifestEventFlagMirror>,
     #[serde(default)]
     death_link_enabled: bool,
     #[serde(default = "default_death_link_rebound_seconds")]
     death_link_rebound_seconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestEventFlagMirror {
+    source_event_flag: i32,
+    target_event_flag: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,6 +148,7 @@ struct SnapshotRequest<'a> {
     seed_id: &'a str,
     active_event_flags: &'a [i32],
     active_check_flags: &'a [i32],
+    active_mirror_flags: &'a [i32],
     current_igt_ms: u32,
     death_count: u32,
     check_count: u32,
@@ -111,8 +164,16 @@ struct SnapshotResponse {
     team_unique_check_count: u32,
     player_shard_count: u32,
     team_unique_shard_count: u32,
+    #[serde(default)]
+    player_great_rune_count: u32,
+    #[serde(default)]
+    team_unique_great_rune_count: u32,
     required_unique_shards: Option<u32>,
     shard_requirement_met: bool,
+    #[serde(default)]
+    required_unique_great_runes: Option<u32>,
+    #[serde(default = "default_true")]
+    great_rune_requirement_met: bool,
     victory_flag_reached: bool,
     finish_requirements_met: bool,
     player_finish_igt_ms: Option<u64>,
@@ -250,22 +311,52 @@ fn validate_settings(mut settings: CompetitionSettings) -> Result<CompetitionSet
     {
         return Err("Competition assignment_token must be a 64-character token.".to_string());
     }
-    if settings.win_condition_flag < 0 || settings.shard_event_flags.iter().any(|flag| *flag < 0) {
+    if settings.win_condition_flag < 0
+        || settings.shard_event_flags.iter().any(|flag| *flag < 0)
+        || settings.great_rune_event_flags.iter().any(|flag| *flag < 0)
+        || settings
+            .event_flag_mirrors
+            .iter()
+            .any(|mapping| mapping.source_event_flag < 0 || mapping.target_event_flag < 0)
+    {
         return Err("Competition event flags must be non-negative.".to_string());
     }
     if settings.required_unique_shards == Some(0) {
         return Err("Competition required_unique_shards must be greater than zero.".to_string());
+    }
+    if settings.required_unique_great_runes == Some(0) {
+        return Err(
+            "Competition required_unique_great_runes must be greater than zero.".to_string(),
+        );
     }
     if settings.death_link_rebound_seconds == 0 {
         return Err("Competition death-link settings are invalid.".to_string());
     }
     settings.shard_event_flags.sort_unstable();
     settings.shard_event_flags.dedup();
+    settings.great_rune_event_flags.sort_unstable();
+    settings.great_rune_event_flags.dedup();
+    settings
+        .event_flag_mirrors
+        .sort_unstable_by_key(|mapping| mapping.source_event_flag);
+    settings
+        .event_flag_mirrors
+        .dedup_by_key(|mapping| mapping.source_event_flag);
     if settings
         .shard_event_flags
         .contains(&settings.win_condition_flag)
+        || settings
+            .great_rune_event_flags
+            .contains(&settings.win_condition_flag)
     {
-        return Err("The win condition flag cannot also be a shard flag.".to_string());
+        return Err("The win condition flag cannot also be a collectible flag.".to_string());
+    }
+    if settings
+        .shard_event_flags
+        .iter()
+        .any(|flag| settings.great_rune_event_flags.contains(flag))
+    {
+        return Err("An event flag cannot be both a shard and a great rune.".to_string());
     }
     Ok(settings)
 }
@@ -305,10 +396,25 @@ fn apply_manifest(
 
     settings.win_condition_flag = manifest.win_condition_flag;
     settings.required_unique_shards = manifest.required_unique_shards;
+    settings.required_unique_great_runes = manifest.required_unique_great_runes;
+    settings.collectible_display_mode = manifest.collectible_display_mode;
     settings.shard_event_flags = manifest
         .shard_flags
         .into_iter()
         .map(|shard| shard.event_flag)
+        .collect();
+    settings.great_rune_event_flags = manifest
+        .great_rune_flags
+        .into_iter()
+        .map(|great_rune| great_rune.event_flag)
+        .collect();
+    settings.event_flag_mirrors = manifest
+        .event_flag_mirrors
+        .into_iter()
+        .map(|mapping| EventFlagMirror {
+            source_event_flag: mapping.source_event_flag,
+            target_event_flag: mapping.target_event_flag,
+        })
         .collect();
     settings.death_link_enabled = manifest.death_link_enabled;
     settings.death_link_rebound_seconds = manifest.death_link_rebound_seconds;
@@ -352,6 +458,7 @@ fn upload_loop(
             seed_id: &settings.seed_id,
             active_event_flags: &observation.active_event_flags,
             active_check_flags: &observation.active_boss_flags,
+            active_mirror_flags: &observation.active_mirror_flags,
             current_igt_ms: observation.current_igt_ms,
             death_count: observation.death_count,
             check_count: observation.check_count,
@@ -381,8 +488,12 @@ fn upload_loop(
                     state.team_unique_check_count = response.team_unique_check_count;
                     state.player_shard_count = response.player_shard_count;
                     state.team_unique_shard_count = response.team_unique_shard_count;
+                    state.player_great_rune_count = response.player_great_rune_count;
+                    state.team_unique_great_rune_count = response.team_unique_great_rune_count;
                     state.required_unique_shards = response.required_unique_shards;
                     state.shard_requirement_met = response.shard_requirement_met;
+                    state.required_unique_great_runes = response.required_unique_great_runes;
+                    state.great_rune_requirement_met = response.great_rune_requirement_met;
                     state.victory_flag_reached = response.victory_flag_reached;
                     state.finish_requirements_met = response.finish_requirements_met;
                     state.player_finish_igt_ms = response.player_finish_igt_ms;
@@ -437,8 +548,9 @@ fn upload_loop(
 #[cfg(test)]
 mod tests {
     use super::{
-        CompetitionFile, DEFAULT_DEATH_LINK_REBOUND_SECONDS, ManifestResponse, ManifestShard,
-        SnapshotResponse, apply_manifest, validate_settings,
+        CollectibleDisplayMode, CompetitionFile, DEFAULT_DEATH_LINK_REBOUND_SECONDS,
+        ManifestEventFlagMirror, ManifestResponse, ManifestShard, SnapshotResponse, apply_manifest,
+        validate_settings,
     };
 
     #[test]
@@ -449,8 +561,12 @@ mod tests {
                 "teamUniqueCheckCount": 0,
                 "playerShardCount": 0,
                 "teamUniqueShardCount": 0,
+                "playerGreatRuneCount": 1,
+                "teamUniqueGreatRuneCount": 2,
                 "requiredUniqueShards": null,
                 "shardRequirementMet": true,
+                "requiredUniqueGreatRunes": 2,
+                "greatRuneRequirementMet": true,
                 "victoryFlagReached": false,
                 "finishRequirementsMet": false,
                 "playerFinishIgtMs": null,
@@ -474,6 +590,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.combined_death_count, Some(5));
+        assert_eq!(response.player_great_rune_count, 1);
+        assert_eq!(response.team_unique_great_rune_count, 2);
+        assert_eq!(response.required_unique_great_runes, Some(2));
+        assert!(response.great_rune_requirement_met);
         assert_eq!(response.event_flag_deliveries.len(), 1);
         assert_eq!(response.event_flag_deliveries[0].event_flag, 1_033_640_001);
         assert_eq!(response.death_link_deliveries.len(), 1);
@@ -495,6 +615,7 @@ seed_id = "seed"
         let file: CompetitionFile = toml::from_str(source).unwrap();
         let settings = validate_settings(file.competition).unwrap();
         assert!(settings.shard_event_flags.is_empty());
+        assert!(settings.great_rune_event_flags.is_empty());
     }
 
     #[test]
@@ -515,12 +636,23 @@ seed_id = "seed"
                 seed_id: "seed".to_string(),
                 win_condition_flag: 20_010_800,
                 required_unique_shards: Some(17),
+                required_unique_great_runes: Some(2),
+                collectible_display_mode: CollectibleDisplayMode::Both,
                 death_link_enabled: true,
                 death_link_rebound_seconds: DEFAULT_DEATH_LINK_REBOUND_SECONDS,
+                event_flag_mirrors: vec![ManifestEventFlagMirror {
+                    source_event_flag: 10_043_289,
+                    target_event_flag: 342_432,
+                }],
                 shard_flags: vec![
                     ManifestShard { event_flag: 3 },
                     ManifestShard { event_flag: 1 },
                     ManifestShard { event_flag: 3 },
+                ],
+                great_rune_flags: vec![
+                    ManifestShard { event_flag: 8 },
+                    ManifestShard { event_flag: 7 },
+                    ManifestShard { event_flag: 8 },
                 ],
             },
         )
@@ -528,7 +660,16 @@ seed_id = "seed"
 
         assert_eq!(resolved.win_condition_flag, 20_010_800);
         assert_eq!(resolved.required_unique_shards, Some(17));
+        assert_eq!(resolved.required_unique_great_runes, Some(2));
+        assert_eq!(
+            resolved.collectible_display_mode,
+            CollectibleDisplayMode::Both
+        );
         assert_eq!(resolved.shard_event_flags, [1, 3]);
+        assert_eq!(resolved.great_rune_event_flags, [7, 8]);
+        assert_eq!(resolved.event_flag_mirrors.len(), 1);
+        assert_eq!(resolved.event_flag_mirrors[0].source_event_flag, 10_043_289);
+        assert_eq!(resolved.event_flag_mirrors[0].target_event_flag, 342_432);
         assert!(resolved.death_link_enabled);
         assert_eq!(resolved.death_link_rebound_seconds, 30);
     }
@@ -543,6 +684,23 @@ assignment_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 seed_id = "seed"
 win_condition_flag = 10
 shard_event_flags = [10]
+great_rune_event_flags = [11]
+"#;
+        let file: CompetitionFile = toml::from_str(source).unwrap();
+        assert!(validate_settings(file.competition).is_err());
+    }
+
+    #[test]
+    fn rejects_flags_shared_by_shards_and_great_runes() {
+        let source = r#"
+[competition]
+api_url = "https://example.supabase.co/functions/v1/absoloot-telemetry"
+assignment_id = "assignment"
+assignment_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+seed_id = "seed"
+win_condition_flag = 10
+shard_event_flags = [20]
+great_rune_event_flags = [20]
 "#;
         let file: CompetitionFile = toml::from_str(source).unwrap();
         assert!(validate_settings(file.competition).is_err());

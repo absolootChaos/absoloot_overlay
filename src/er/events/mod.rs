@@ -406,9 +406,10 @@ pub fn start_event_flag_writer(
                         // SAFETY: Elden Ring invokes this callback from its task system,
                         // matching the main-thread exclusivity requirement for instance_mut.
                         let Ok(flag_manager) = (unsafe { CSEventFlagMan::instance_mut() }) else {
-                            return false;
+                            return None;
                         };
 
+                        let mut verified_delivery_ids = Vec::new();
                         for delivery in &pending_event_flags {
                             let Ok(event_flag) = u32::try_from(delivery.event_flag) else {
                                 continue;
@@ -418,17 +419,25 @@ pub fn start_event_flag_writer(
                                     .virtual_memory_flag
                                     .set_flag(event_flag, true);
                             }
+                            if flag_manager.virtual_memory_flag.get_flag(event_flag) {
+                                verified_delivery_ids.push(delivery.delivery_id.clone());
+                            }
                         }
-                        true
+                        Some(verified_delivery_ids)
                     }));
 
                     match result {
-                        Ok(true) => {
+                        Ok(Some(applied_ids)) => {
+                            if applied_ids.is_empty() {
+                                if Instant::now() >= next_error_log {
+                                    debug_log!(
+                                        "[event_flags] Teammate event flags did not verify after writing; retrying"
+                                    );
+                                    next_error_log = Instant::now() + WRITER_ERROR_LOG_INTERVAL;
+                                }
+                                return;
+                            }
                             if let Ok(mut current_state) = state.write() {
-                                let applied_ids = pending_event_flags
-                                    .iter()
-                                    .map(|delivery| delivery.delivery_id.clone())
-                                    .collect::<Vec<_>>();
                                 current_state
                                     .pending_event_flags
                                     .retain(|delivery| !applied_ids.contains(&delivery.delivery_id));
@@ -442,7 +451,7 @@ pub fn start_event_flag_writer(
                                 }
                             }
                         }
-                        Ok(false) => {
+                        Ok(None) => {
                             if Instant::now() >= next_error_log {
                                 debug_log!(
                                     "[event_flags] Event flag manager unavailable while applying teammate flags; retrying"

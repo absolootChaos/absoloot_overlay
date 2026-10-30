@@ -134,13 +134,8 @@ impl EROverlayUi {
         } else {
             render_centered_text(ui, model.title, &model.lines);
         }
-        let line_count = if model.competition.is_some() {
-            7 + usize::from(
-                model
-                    .competition
-                    .as_ref()
-                    .is_some_and(|panel| panel.shard_goal_notice.is_some()),
-            )
+        let line_count = if let Some(panel) = &model.competition {
+            panel.line_count()
         } else {
             model.lines.len() + usize::from(model.title.is_some())
         };
@@ -198,13 +193,24 @@ impl EROverlayUi {
             &panel.combined_checks,
             VALUE_COLOR,
         );
-        render_competition_row(
-            ui,
-            "Shards",
-            &panel.shards,
-            &panel.combined_unique_shards,
-            ORANGE_COLOR,
-        );
+        if panel.shows_shards {
+            render_competition_row(
+                ui,
+                "Shards",
+                &panel.shards,
+                &panel.combined_unique_shards,
+                ORANGE_COLOR,
+            );
+        }
+        if panel.shows_great_runes {
+            render_competition_row(
+                ui,
+                "GR",
+                &panel.great_runes,
+                &panel.combined_unique_great_runes,
+                GOLD_COLOR,
+            );
+        }
         render_competition_row(
             ui,
             "Deaths",
@@ -216,6 +222,10 @@ impl EROverlayUi {
         if let Some(notice) = &panel.shard_goal_notice {
             ui.separator();
             render_right_aligned_value(ui, notice, GREEN_COLOR);
+        }
+        if let Some(notice) = &panel.great_rune_goal_notice {
+            ui.separator();
+            render_right_aligned_value(ui, notice, GOLD_COLOR);
         }
     }
 
@@ -231,17 +241,10 @@ impl EROverlayUi {
             }
         }
 
-        let line_count = if model.competition.is_some() {
-            7 + usize::from(
-                model
-                    .competition
-                    .as_ref()
-                    .is_some_and(|panel| panel.shard_goal_notice.is_some()),
-            )
-        } else {
-            model.lines.len() + usize::from(model.title.is_some())
-        };
-        let header_h = ui.text_line_height_with_spacing() * line_count as f32 + 8.0;
+        // Only the top title strip collapses the expanded overlay. The old
+        // estimated full-scorecard height extended into the first boss-region
+        // row, so clicking that row could collapse the window instead.
+        let header_h = ui.text_line_height_with_spacing() + 8.0;
         if header_clicked(ui, header_h) {
             let now = Instant::now();
             if now.duration_since(self.last_toggle_time) > Duration::from_millis(300) {
@@ -278,13 +281,8 @@ impl EROverlayUi {
             .map(|line| ui.calc_text_size(line)[0])
             .fold(0.0, f32::max);
 
-        let line_count = if model.competition.is_some() {
-            7 + usize::from(
-                model
-                    .competition
-                    .as_ref()
-                    .is_some_and(|panel| panel.shard_goal_notice.is_some()),
-            )
+        let line_count = if let Some(panel) = &model.competition {
+            panel.line_count()
         } else {
             model.lines.len() + usize::from(model.title.is_some())
         };

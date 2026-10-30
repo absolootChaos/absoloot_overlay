@@ -1,6 +1,6 @@
 [package]
 name = "absoloot_overlay"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 
 [lib]
@@ -8,8 +8,8 @@ name = "absoloot_overlay"
 crate-type = ["cdylib"]
 
 [dependencies]
-eldenring = { git = "https://github.com/vswarte/fromsoftware-rs", rev = "59fbd3b3b7daaf14aca47c9f73530493dba6bc79", package = "eldenring" }
-fromsoftware_shared = { git = "https://github.com/vswarte/fromsoftware-rs", rev = "59fbd3b3b7daaf14aca47c9f73530493dba6bc79", package = "fromsoftware-shared" }
+eldenring = { git = "https://github.com/vswarte/fromsoftware-rs", rev = "09a4208ac26af4ae07b08c5273ee0e89faf97cb8", package = "eldenring" }
+fromsoftware_shared = { git = "https://github.com/vswarte/fromsoftware-rs", rev = "09a4208ac26af4ae07b08c5273ee0e89faf97cb8", package = "fromsoftware-shared" }
 serde = { version = "1.0", features = ["derive"] }
 winapi = { version = "0.3.9", features = ["libloaderapi"] }
 toml = "0.9.8"
